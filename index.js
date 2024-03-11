@@ -13,19 +13,22 @@ const WCLO_ADDRESS = '0xF5AD6F6EDeC824C7fD54A66d241a227F6503aD3a';
 const LAST_BLOCK = BigInt(process.env.ENDBLOCK || '14186359');
 const FIRST_BLOCK = BigInt(process.env.STARTBLOCK || '0');
 const BATCH_SIZE = BigInt(10000);
+const OUT_FILE = process.env.OUT_FILE || 'soy_buyer.csv';
 
 const EVENT_TRANSFER = 'Transfer';
 const EVENT_SWAP = 'Swap';
 
 const holders = new Map();
+const transfers = new Map();
 
-function addToHolder(address, value) {
+function addToHolder(address, value, transfer = false) {
     // console.log(`${address} -> ${value}`);
+    const set = transfer ? transfers : holders;
     let newVal = value;
-    if (holders.has(address)) {
-       newVal += holders.get(address);
+    if (set.has(address)) {
+       newVal += set.get(address);
     }
-    holders.set(address, newVal);
+    set.set(address, newVal);
 }
 
 // main ()
@@ -48,6 +51,16 @@ function addToHolder(address, value) {
         SOY_ABI,
         SOY_ADDRESS
     );
+
+    //
+    const buyFile = 'soy_buy.csv';
+    fs.writeFileSync(buyFile, '', 'utf8');
+    fs.appendFileSync(buyFile,`address;value;tx_hash`);
+
+    //
+    const transferFile = 'soy_trans.csv';
+    fs.writeFileSync(transferFile, '', 'utf8');
+    fs.appendFileSync(transferFile,`from;to;value;tx_hash`);
 
     const testPair = [WCLO_ADDRESS.toUpperCase(), SOY_ADDRESS.toUpperCase()];
     // const contracts = [ZERO_ADDRESS.toUpperCase(), FARM_ADDRESS.toUpperCase(), FARM2_ADDRESS.toUpperCase()];
@@ -72,10 +85,11 @@ function addToHolder(address, value) {
                 const user = event.returnValues['0'].toUpperCase();
                 const tokenA = event.returnValues['1'].toUpperCase();
                 const tokenB = event.returnValues['2'].toUpperCase();
-                const val = BigInt(event.returnValues['3']);
+                const val = BigInt(event.returnValues['4']);
 
-                if (testPair.includes(tokenA) && testPair.includes(tokenB)) {
+                if (tokenA === testPair[0] && tokenB === testPair[1]) {
                     addToHolder(user, val);
+                    fs.appendFileSync(buyFile,`\n${user};${val};${event.transactionHash}`);
                 }
             }
         }
@@ -89,10 +103,14 @@ function addToHolder(address, value) {
         if (eventsSoy.length) {
             for (let event of eventsSoy) {
                 const tokenA = event.returnValues['0'].toUpperCase();
+                const tokenB = event.returnValues['1'].toUpperCase();
                 const val = BigInt(event.returnValues['2']);
 
-                if (holders.has(tokenA)) {
-                    addToHolder(tokenA, val * (-1n));
+                // if (transfers.has(tokenA)) {
+                if (holders.has(tokenA) || holders.has(tokenB)) {
+                    addToHolder(tokenA, val * (-1n), true);
+                    addToHolder(tokenB, val, true);
+                    fs.appendFileSync(transferFile,`\n${tokenA};${tokenB};${val};${event.transactionHash}`);
                 }
             }
         }
@@ -103,13 +121,34 @@ function addToHolder(address, value) {
 
     console.timeEnd('getEvents');
 
-    let outStr = 'address;SOY wei;SOY ether\n';
+    let outStr = 'address;SOY ether;buy;trans\n';
     for (const [key, value] of holders) {
-        if (value > 0n) {
-            outStr += `${key.toLowerCase()};${value};${web3.utils.fromWei(value, 'ether')}\n`;
+        let resVal = value;
+        let transVal = 0;
+
+        if (transfers.has(key)) {
+            transVal = transfers.get(key);
+            resVal = transVal < value ? transVal : value;
+        } else {
+            continue;
+        }
+
+        if (resVal > 0n) {
+            outStr += `${key.toLowerCase()};${web3.utils.fromWei(resVal, 'ether')};${web3.utils.fromWei(value, 'ether')};${web3.utils.fromWei(transVal, 'ether')}\n`;
         }
     }
 
     // console.dir(holders);
-    fs.writeFileSync(path.resolve(__dirname + '/out', 'soy_buyer.csv'), outStr, 'utf8');
+    const outFile = path.resolve(__dirname + `/${OUT_FILE}`);
+    if (fs.existsSync(outFile)) {
+        //
+    } else {
+        try {
+            fs.mkdirSync(path.dirname(outFile));
+        } catch (e) {
+            console.log(`Error creating dir ${e.toString()}`);
+        }
+    }
+
+    fs.writeFileSync(path.resolve(outFile), outStr, 'utf8');
 })();
